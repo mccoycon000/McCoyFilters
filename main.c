@@ -20,6 +20,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 void image_apply_colorshift(struct Pixel** pArr, struct DIB_Header* header, int rShift, int gShift, int bShift);
+void blur(struct Pixel** pArr, struct DIB_Header* header);
 
 //MACRO DEFINITIONS
 //problem assumptions
@@ -77,8 +78,9 @@ void main(int argc, char* argv[]) {
     char* file_output_name;
 
 
-    image_apply_colorshift(pixels, &DIB, 56, 0 , 0);
+    //image_apply_colorshift(pixels, &DIB, 56, 0 , 0);
 
+    blur(pixels, &DIB);
 
     //If output name wasn't given through command line make it default to original name + _copy.bmp
     if(changedName ==0){
@@ -114,6 +116,91 @@ void main(int argc, char* argv[]) {
 }
 
 void blur(struct Pixel** pArr, struct DIB_Header* header){
+    int sumRed = 0;
+    int sumBlue = 0;
+    int sumGreen = 0;
+    int validN = 1;
+
+    for (int i = 0; i < header->height; i++) {
+        for (int j = 0; j < header->width; j++) {
+
+            validN = 1;
+            sumBlue = 0;
+            sumGreen = 0;
+            sumRed = 0;
+
+            sumBlue += (int)pArr[i][j].blue;
+            sumGreen += (int)pArr[i][j].green;
+            sumRed += (int)pArr[i][j].red;
+
+            //Bottom Neighbor
+            if(i+1 < header->height ){
+                sumBlue += (int)pArr[i+1][j].blue;
+                sumGreen += (int)pArr[i+1][j].green;
+                sumRed += (int)pArr[i+1][j].red;
+                validN++;
+            }
+
+            //Top Neighbor
+            if(i-1 >= 0){
+                sumBlue += (int)pArr[i-1][j].blue;
+                sumGreen += (int)pArr[i-1][j].green;
+                sumRed += (int)pArr[i-1][j].red;
+                validN++;
+            }
+
+            //Right Neighbor
+            if(j+1 < header->width ){
+                sumBlue += (int)pArr[i][j+1].blue;
+                sumGreen += (int)pArr[i][j+1].green;
+                sumRed += (int)pArr[i][j+1].red;
+                validN++;
+            }
+            //Left Neighbor
+            if(j-1 >= 0){
+                sumBlue += (int)pArr[i][j-1].blue;
+                sumGreen += (int)pArr[i][j-1].green;
+                sumRed += (int)pArr[i][j-1].red;
+                validN++;
+            }
+            //Bottom Right Neighbor
+
+            if(i + 1 < header->height  && j + 1 < header->width ){
+                sumBlue += (int)pArr[i+1][j+1].blue;
+                sumGreen += (int)pArr[i+1][j+1].green;
+                sumRed += (int)pArr[i+1][j+1].red;
+                validN++;
+            }
+
+            //Top Right Neighbor
+            if(i - 1 >= 0 && j + 1 < header->width ){
+                sumBlue += (int)pArr[i-1][j+1].blue;
+                sumGreen += (int)pArr[i-1][j+1].green;
+                sumRed += (int)pArr[i-1][j+1].red;
+                validN++;
+            }
+
+            //Bottom Left Neighbor
+            if(i + 1 < header->height  && j - 1 >= 0){
+                sumBlue += (int)pArr[i+1][j-1].blue;
+                sumGreen += (int)pArr[i+1][j-1].green;
+                sumRed += (int)pArr[i+1][j-1].red;
+                validN++;
+            }
+
+            //Top Left Neighbor
+            if(i - 1 >= 0 && j - 1 >= 0){
+                sumBlue += (int)pArr[i-1][j-1].blue;
+                sumGreen += (int)pArr[i-1][j-1].green;
+                sumRed += (int)pArr[i-1][j-1].red;
+                validN++;
+            }
+
+            pArr[i][j].blue = (unsigned char)(sumBlue/validN);
+            pArr[i][j].green = (unsigned char)(sumGreen/validN);
+            pArr[i][j].red = (unsigned char)(sumRed/validN);
+        }
+    }
 
 }
 
