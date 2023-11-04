@@ -14,7 +14,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
-//TODO: finish me
+#include <pthread.h>
 
 
 //UNCOMMENT BELOW LINE IF USING SER334 LIBRARY/OBJECT FOR BMP SUPPORT
@@ -24,13 +24,13 @@
 void image_apply_colorshift(struct Pixel** pArr, struct DIB_Header* header, int rShift, int gShift, int bShift);
 void blur(struct Pixel** pArr, struct DIB_Header* header);
 void drawCircles(struct Pixel** pArr, struct DIB_Header* header);
-
+void* threaded_blur(void* data);
 //MACRO DEFINITIONS
 //problem assumptions
 #define BMP_HEADER_SIZE 14
 #define BMP_DIB_HEADER_SIZE 40
 #define MAXIMUM_IMAGE_SIZE 4096
-//TODO: finish me
+#define THREAD_COUNT 4
 ////////////////////////////////////////////////////////////////////////////////
 //DATA STRUCTURES
 //
@@ -38,6 +38,14 @@ struct Circle{
     int x;
     int y;
     int r;
+};
+
+struct info{
+    int start;//Where threads image array start in relation to global pixel array
+    int end;//Where threads image ends in relations to global pixel array
+    int height;//Height of threads specific pixel array
+    int width;//Width of threads specific pixel array
+    struct Pixel** pArr;
 };
 ////////////////////////////////////////////////////////////////////////////////
 //MAIN PROGRAM CODE
@@ -85,12 +93,69 @@ void main(int argc, char* argv[]) {
 
     char* file_output_name;
 
+    int height = DIB.height;
+    int width = DIB.width;
+    pthread_t tids[THREAD_COUNT];
 
-    //image_apply_colorshift(pixels, &DIB, 56, 0 , 0);
+    int padding = (3-((width/THREAD_COUNT)%3))%3;
+
+    struct info** infos = (struct info**)malloc(sizeof(struct info*) * THREAD_COUNT);
+
+    //Creating info structs and data splitting for blur threads
+    for(int i = 0; i < THREAD_COUNT; i++){
+        infos[i] = (struct info*)malloc(sizeof(struct info));
+        infos[i]->start = i*(width/THREAD_COUNT);
+        infos[i]-> end = (width/(THREAD_COUNT+i)) + padding;
+        infos[i]->height = height;
+        infos[i]->width = (width/THREAD_COUNT) + padding;
+        struct Pixel** pArr = (struct Pixel**)malloc(sizeof(struct Pixel*)*infos[i]->height);
+        for(int p = 0; p < infos[i]->height; p++){
+            pArr[p] = (struct Pixel*)malloc(sizeof(struct Pixel) * infos[i]->width);
+            printf("Allocating each threads memory p = %d, thread = %d\n", p, i);
+        }
+        infos[i]->pArr = pArr;
+        for(int j = 0; j < infos[i]->height; j++){
+            for(int k = 0; k< infos[i]->width; k++){
+                infos[i]->pArr[j][k].red = pixels[j][k+infos[i]->start].red;
+                infos[i]->pArr[j][k].blue = pixels[j][k+infos[i]->start].blue;
+                infos[i]->pArr[j][k].green = pixels[j][k+infos[i]->start].green;
+                printf("Copying from big array to thread array, j = %d, k = %d, thread = %d\n", j, k, i);
+            }
+        }
+        pthread_create(&tids[i],NULL,threaded_blur,infos[i]);
+    }
+
+    for(int i = 0; i < THREAD_COUNT; i++){
+        pthread_join(tids[i],NULL);
+    }
+
+    for(int i = 0; i < THREAD_COUNT; i++){
+        for(int j = 0; j < infos[i]->height; j++){
+            for(int k = 0; k< infos[i]->width - padding; k++){
+                pixels[j][k + infos[i]->start].red = infos[i]->pArr[j][k].red;
+                pixels[j][k + infos[i]->start].blue =  infos[i]->pArr[j][k].blue;
+                pixels[j][k + infos[i]->start].green = infos[i]->pArr[j][k].green;
+                printf("Copying from threaded arrays to big array, j = %d, k = %d, thread = %d\n", j, k, i);
+            }
+        }
+    }
+
+    for(int i = 0; i < THREAD_COUNT; i++){
+        for(int j = 0; j < infos[i]->height; j++){
+            free(infos[i]->pArr[j]);
+            infos[i]->pArr[j] = NULL;
+        }
+        free(infos[i]->pArr);
+        infos[i]->pArr = NULL;
+        free(infos[i]);
+        infos[i]=NULL;
+    }
+    free(infos);
+    infos = NULL;
 
     //blur(pixels, &DIB);
 
-    drawCircles(pixels, &DIB);
+    //drawCircles(pixels, &DIB);
 
     //If output name wasn't given through command line make it default to original name + _copy.bmp
     if(changedName ==0){
@@ -147,10 +212,11 @@ void drawCircles(struct Pixel** pArr, struct DIB_Header* header) {
         if(i > 0){
             int j = 0;
             while(j < i){
+                //Use distance formula to see if distance betwen points is less then sum of each circles radius
                 if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
                     y = rand() % header->height;;
                     x = rand() % header->width;
-                    j = 0;
+                    j = 0; //If there is overlap you have to reset loop so each new center point is compared to every existing circle each time
                 } else{
                     j++;
                 }
@@ -306,6 +372,99 @@ void blur(struct Pixel** pArr, struct DIB_Header* header){
             pArr[i][j].blue = (unsigned char)(sumBlue/validN);
             pArr[i][j].green = (unsigned char)(sumGreen/validN);
             pArr[i][j].red = (unsigned char)(sumRed/validN);
+        }
+    }
+
+}
+
+void* threaded_blur(void* data){
+
+    struct info* info = (struct info*)data;
+    int sumRed = 0;
+    int sumBlue = 0;
+    int sumGreen = 0;
+    int validN = 1;
+
+    for (int i = 0; i < info->height; i++) {
+        for (int j = 0; j < info->width; j++) {
+
+            validN = 1;
+            sumBlue = 0;
+            sumGreen = 0;
+            sumRed = 0;
+
+            sumBlue += (int)info->pArr[i][j].blue;
+            sumGreen += (int)info->pArr[i][j].green;
+            sumRed += (int)info->pArr[i][j].red;
+
+            //Bottom Neighbor
+            if(i+1 < info->height ){
+                sumBlue += (int)info->pArr[i+1][j].blue;
+                sumGreen += (int)info->pArr[i+1][j].green;
+                sumRed += (int)info->pArr[i+1][j].red;
+                validN++;
+            }
+
+            //Top Neighbor
+            if(i-1 >= 0){
+                sumBlue += (int)info->pArr[i-1][j].blue;
+                sumGreen += (int)info->pArr[i-1][j].green;
+                sumRed += (int)info->pArr[i-1][j].red;
+                validN++;
+            }
+
+            //Right Neighbor
+            if(j+1 < info->width ){
+                sumBlue += (int)info->pArr[i][j+1].blue;
+                sumGreen += (int)info->pArr[i][j+1].green;
+                sumRed += (int)info->pArr[i][j+1].red;
+                validN++;
+            }
+            //Left Neighbor
+            if(j-1 >= 0){
+                sumBlue += (int)info->pArr[i][j-1].blue;
+                sumGreen += (int)info->pArr[i][j-1].green;
+                sumRed += (int)info->pArr[i][j-1].red;
+                validN++;
+            }
+            //Bottom Right Neighbor
+
+            if(i + 1 < info->height  && j + 1 < info->width ){
+                sumBlue += (int)info->pArr[i+1][j+1].blue;
+                sumGreen += (int)info->pArr[i+1][j+1].green;
+                sumRed += (int)info->pArr[i+1][j+1].red;
+                validN++;
+            }
+
+            //Top Right Neighbor
+            if(i - 1 >= 0 && j + 1 < info->width ){
+                sumBlue += (int)info->pArr[i-1][j+1].blue;
+                sumGreen += (int)info->pArr[i-1][j+1].green;
+                sumRed += (int)info->pArr[i-1][j+1].red;
+                validN++;
+            }
+
+            //Bottom Left Neighbor
+            if(i + 1 < info->height  && j - 1 >= 0){
+                sumBlue += (int)info->pArr[i+1][j-1].blue;
+                sumGreen += (int)info->pArr[i+1][j-1].green;
+                sumRed += (int)info->pArr[i+1][j-1].red;
+                validN++;
+            }
+
+            //Top Left Neighbor
+            if(i - 1 >= 0 && j - 1 >= 0){
+                sumBlue += (int)info->pArr[i-1][j-1].blue;
+                sumGreen += (int)info->pArr[i-1][j-1].green;
+                sumRed += (int)info->pArr[i-1][j-1].red;
+                validN++;
+            }
+
+            info->pArr[i][j].blue = (unsigned char)(sumBlue/validN);
+            info->pArr[i][j].green = (unsigned char)(sumGreen/validN);
+            info->pArr[i][j].red = (unsigned char)(sumRed/validN);
+
+            printf("Threaded blurr, i = %d, j = %d, thread = %d\n", i, j, i);
         }
     }
 
