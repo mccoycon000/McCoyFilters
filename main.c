@@ -1,10 +1,10 @@
 /**
-* (basic description of the program or class)
+* Threaded bmp image process, apply blur and cheese filter
 *
 * Completion time: (estimation of hours spent on this program)
 *
-* @author (your name), (anyone else, e.g., Acuna, whose code you used)
-* @version (a version number or a date)
+* @author Connor McCoy
+* @version 11/4/23
 */
 ////////////////////////////////////////////////////////////////////////////////
 //INCLUDES
@@ -15,9 +15,6 @@
 #include <math.h>
 #include <time.h>
 #include <pthread.h>
-
-
-//UNCOMMENT BELOW LINE IF USING SER334 LIBRARY/OBJECT FOR BMP SUPPORT
 #include "BmpProcessor.h"
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -30,7 +27,7 @@ void* threaded_blur(void* data);
 #define BMP_HEADER_SIZE 14
 #define BMP_DIB_HEADER_SIZE 40
 #define MAXIMUM_IMAGE_SIZE 4096
-#define THREAD_COUNT 4
+#define THREAD_COUNT 7
 ////////////////////////////////////////////////////////////////////////////////
 //DATA STRUCTURES
 //
@@ -49,7 +46,6 @@ struct info{
 };
 ////////////////////////////////////////////////////////////////////////////////
 //MAIN PROGRAM CODE
-//TODO: finish me
 void main(int argc, char* argv[]) {
     struct BMP_Header BMP;
     struct DIB_Header DIB;
@@ -107,11 +103,14 @@ void main(int argc, char* argv[]) {
         infos[i]->start = i*(width/THREAD_COUNT);
         infos[i]-> end = (width/(THREAD_COUNT+i)) + padding;
         infos[i]->height = height;
-        infos[i]->width = (width/THREAD_COUNT) + padding;
+        if(i == THREAD_COUNT - 1){
+            infos[i]->width = (width/THREAD_COUNT);
+        }else{
+            infos[i]->width = (width/THREAD_COUNT) + padding;
+        }
         struct Pixel** pArr = (struct Pixel**)malloc(sizeof(struct Pixel*)*infos[i]->height);
         for(int p = 0; p < infos[i]->height; p++){
             pArr[p] = (struct Pixel*)malloc(sizeof(struct Pixel) * infos[i]->width);
-            printf("Allocating each threads memory p = %d, thread = %d\n", p, i);
         }
         infos[i]->pArr = pArr;
         for(int j = 0; j < infos[i]->height; j++){
@@ -119,27 +118,30 @@ void main(int argc, char* argv[]) {
                 infos[i]->pArr[j][k].red = pixels[j][k+infos[i]->start].red;
                 infos[i]->pArr[j][k].blue = pixels[j][k+infos[i]->start].blue;
                 infos[i]->pArr[j][k].green = pixels[j][k+infos[i]->start].green;
-                printf("Copying from big array to thread array, j = %d, k = %d, thread = %d\n", j, k, i);
             }
         }
         pthread_create(&tids[i],NULL,threaded_blur,infos[i]);
+        printf("thread %d created\n", i);
     }
 
+    //Joining threads
     for(int i = 0; i < THREAD_COUNT; i++){
         pthread_join(tids[i],NULL);
+        printf("thread %d joined\n", i);
     }
 
+    //Take threaded pArrs and copy their info back into og array
     for(int i = 0; i < THREAD_COUNT; i++){
         for(int j = 0; j < infos[i]->height; j++){
             for(int k = 0; k< infos[i]->width - padding; k++){
                 pixels[j][k + infos[i]->start].red = infos[i]->pArr[j][k].red;
                 pixels[j][k + infos[i]->start].blue =  infos[i]->pArr[j][k].blue;
                 pixels[j][k + infos[i]->start].green = infos[i]->pArr[j][k].green;
-                printf("Copying from threaded arrays to big array, j = %d, k = %d, thread = %d\n", j, k, i);
             }
         }
     }
 
+    //Free all memory that was allocated
     for(int i = 0; i < THREAD_COUNT; i++){
         for(int j = 0; j < infos[i]->height; j++){
             free(infos[i]->pArr[j]);
@@ -464,7 +466,6 @@ void* threaded_blur(void* data){
             info->pArr[i][j].green = (unsigned char)(sumGreen/validN);
             info->pArr[i][j].red = (unsigned char)(sumRed/validN);
 
-            printf("Threaded blurr, i = %d, j = %d, thread = %d\n", i, j, i);
         }
     }
 
