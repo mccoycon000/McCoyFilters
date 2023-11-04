@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <math.h>
+#include <time.h>
 //TODO: finish me
 
 
@@ -21,6 +23,7 @@
 
 void image_apply_colorshift(struct Pixel** pArr, struct DIB_Header* header, int rShift, int gShift, int bShift);
 void blur(struct Pixel** pArr, struct DIB_Header* header);
+void drawCircles(struct Pixel** pArr, struct DIB_Header* header);
 
 //MACRO DEFINITIONS
 //problem assumptions
@@ -30,7 +33,12 @@ void blur(struct Pixel** pArr, struct DIB_Header* header);
 //TODO: finish me
 ////////////////////////////////////////////////////////////////////////////////
 //DATA STRUCTURES
-//TODO: finish me
+//
+struct Circle{
+    int x;
+    int y;
+    int r;
+};
 ////////////////////////////////////////////////////////////////////////////////
 //MAIN PROGRAM CODE
 //TODO: finish me
@@ -80,7 +88,9 @@ void main(int argc, char* argv[]) {
 
     //image_apply_colorshift(pixels, &DIB, 56, 0 , 0);
 
-    blur(pixels, &DIB);
+    //blur(pixels, &DIB);
+
+    drawCircles(pixels, &DIB);
 
     //If output name wasn't given through command line make it default to original name + _copy.bmp
     if(changedName ==0){
@@ -115,6 +125,103 @@ void main(int argc, char* argv[]) {
     fclose(file_output);
 }
 
+
+void drawCircles(struct Pixel** pArr, struct DIB_Header* header) {
+
+    //First we need to generate circle data
+    int totalN = floor(header->width * 0.08);
+    int avgR = totalN;
+    srand(time(NULL));
+    rand();
+
+
+   struct Circle* circles = (struct Circle*) malloc(sizeof(struct Circle) * totalN);
+
+    //Make first quarter of circles larger
+    for(int i = 0; i < totalN / 4; i++){
+        int y = rand() % header->height;;
+        int x = rand() % header->width;
+        circles[i].r = avgR * 1.5;
+
+        //No overlapping, help evenly distribute
+        if(i > 0){
+            int j = 0;
+            while(j < i){
+                if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
+                    y = rand() % header->height;;
+                    x = rand() % header->width;
+                    j = 0;
+                } else{
+                    j++;
+                }
+            }
+        }
+
+        circles[i].y = y;
+        circles[i].x = x;
+    }
+    //Make second quarter of circles smaller
+    for(int i = totalN/4; i < totalN / 2; i++){
+        int y = rand() % header->height;
+        int x = rand() % header->width;
+        circles[i].r = avgR / 1.5;
+
+        //No overlapping, help evenly distribute
+        int j = 0;
+        while(j < i){
+            if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
+                y = rand() % header->height;;
+                x = rand() % header->width;
+                j = 0;
+            } else{
+                j++;
+            }
+        }
+
+    circles[i].y = y;
+    circles[i].x = x;
+    }
+    //Make last half of quarter avg sized
+    for(int i = totalN/2; i < totalN; i++){
+        int y = rand() % header->height;
+        int x = rand() % header->width;
+        circles[i].r = avgR;
+
+        //No overlapping, help evenly distribute
+        int j = 0;
+        while(j < i){
+            if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
+                y = rand() % header->height;;
+                x = rand() % header->width;
+                j = 0;
+            } else{
+                j++;
+            }
+        }
+    circles[i].y = y;
+    circles[i].x = x;
+    }
+
+    for (int i = 0; i < header->height; i++) {
+        for (int j = 0; j < header->width; j++) {
+            for(int k = 0; k < totalN; k++){
+                double circleValue = pow((j - circles[k].x), 2) + pow(i - circles[k].y, 2);
+                double radSq = pow(circles[k].r,2);
+                if(circleValue <= radSq){
+                    pArr[i][j].red = 0;
+                    pArr[i][j].blue = 0;
+                    pArr[i][j].green = 0;
+                }
+            }
+        }
+    }
+
+    //Make it cheesy
+    image_apply_colorshift(pArr, header, 56, 56, 0);
+
+    free(circles);
+    circles = NULL;
+}
 void blur(struct Pixel** pArr, struct DIB_Header* header){
     int sumRed = 0;
     int sumBlue = 0;
