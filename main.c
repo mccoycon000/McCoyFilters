@@ -17,17 +17,12 @@
 #include <pthread.h>
 #include "BmpProcessor.h"
 ////////////////////////////////////////////////////////////////////////////////
-
-void image_apply_colorshift(struct Pixel** pArr, struct DIB_Header* header, int rShift, int gShift, int bShift);
-void blur(struct Pixel** pArr, struct DIB_Header* header);
-void drawCircles(struct Pixel** pArr, struct DIB_Header* header);
-void* threaded_blur(void* data);
 //MACRO DEFINITIONS
 //problem assumptions
 #define BMP_HEADER_SIZE 14
 #define BMP_DIB_HEADER_SIZE 40
 #define MAXIMUM_IMAGE_SIZE 4096
-#define THREAD_COUNT 7
+#define THREAD_COUNT 57
 ////////////////////////////////////////////////////////////////////////////////
 //DATA STRUCTURES
 //
@@ -43,7 +38,18 @@ struct info{
     int height;//Height of threads specific pixel array
     int width;//Width of threads specific pixel array
     struct Pixel** pArr;
+    struct Circle* circles; //Only used for cheese filter threads
+    int totalCircles;
 };
+
+void image_apply_colorshift(struct Pixel** pArr, int height, int width, int rShift, int gShift, int bShift);
+void blur(struct Pixel** pArr, struct DIB_Header* header);
+void drawCircles(struct Pixel** pArr, struct DIB_Header* header);
+void* threaded_blur(void* data);
+void* drawThreadedCircles(void* data);
+void makeCircles(struct Circle* circles, struct DIB_Header* DIB);
+int isIncluded(struct Circle* circles, int x, int y, int size);
+
 ////////////////////////////////////////////////////////////////////////////////
 //MAIN PROGRAM CODE
 void main(int argc, char* argv[]) {
@@ -92,68 +98,255 @@ void main(int argc, char* argv[]) {
     int height = DIB.height;
     int width = DIB.width;
     pthread_t tids[THREAD_COUNT];
-
-    int padding = (3-((width/THREAD_COUNT)%3))%3;
+    pthread_attr_t attr;
 
     struct info** infos = (struct info**)malloc(sizeof(struct info*) * THREAD_COUNT);
 
-    //Creating info structs and data splitting for blur threads
-    for(int i = 0; i < THREAD_COUNT; i++){
-        infos[i] = (struct info*)malloc(sizeof(struct info));
-        infos[i]->start = i*(width/THREAD_COUNT);
-        infos[i]-> end = (width/(THREAD_COUNT+i)) + padding;
-        infos[i]->height = height;
-        if(i == THREAD_COUNT - 1){
-            infos[i]->width = (width/THREAD_COUNT);
-        }else{
-            infos[i]->width = (width/THREAD_COUNT) + padding;
+    int choice = 0;
+
+    if(choice == 0){
+
+        int segSize = DIB.width/THREAD_COUNT;
+
+        int remPixels = width - (segSize*THREAD_COUNT);
+
+        int currentPixel = 0;
+
+        //Creating info structs and data splitting for blur threads
+        for(int i = 0; i < THREAD_COUNT; i++){
+
+            int padding = 1;
+
+            infos[i] = (struct info*)malloc(sizeof(struct info));
+
+            infos[i]->start = currentPixel;
+
+            infos[i]->height = height;
+
+
+            if(i == THREAD_COUNT - 1){
+                infos[i]-> end = (width - 1);
+                infos[i]->width = infos[i]->end - infos[i]->start + 1;
+            }else{
+                //If there are remaining pixels add to the column size, saving last one for end thread to balance
+                if(remPixels > 1){
+                    infos[i]-> end = (infos[i]->start + segSize + 1);
+                    remPixels--;
+                }else{
+                    infos[i]-> end = (infos[i]->start + segSize);
+                }
+                currentPixel = infos[i]->end;
+
+                //Pad the arrays for blur to be accurate
+                if(i == 0){
+                    infos[i]->end += padding;
+                }
+                if(i > 0 && i < THREAD_COUNT -1){
+                    infos[i]->end += padding;
+                    infos[i]->start -= padding;
+                }
+                if(i == THREAD_COUNT - 1){
+                    infos[i]->start -= padding;
+                }
+                infos[i]->width = infos[i]->end - infos[i]->start;
+
+            }
+
+            struct Pixel** pArr = (struct Pixel**)malloc(sizeof(struct Pixel*)*infos[i]->height);
+            for(int p = 0; p < infos[i]->height; p++){
+                pArr[p] = (struct Pixel*)malloc(sizeof(struct Pixel) * infos[i]->width);
+            }
+
+            infos[i]->pArr = pArr;
+            for(int j = 0; j < infos[i]->height; j++){
+                for(int k = 0; k< infos[i]->width; k++){
+                    infos[i]->pArr[j][k].red = pixels[j][k + infos[i]->start].red;
+                    infos[i]->pArr[j][k].blue = pixels[j][k + infos[i]->start].blue;
+                    infos[i]->pArr[j][k].green = pixels[j][k + infos[i]->start].green;
+                }
+            }
+            pthread_attr_init(&attr);
+            pthread_create(&tids[i],&attr,threaded_blur,infos[i]);
+            printf("thread %d created\n", i);
         }
-        struct Pixel** pArr = (struct Pixel**)malloc(sizeof(struct Pixel*)*infos[i]->height);
-        for(int p = 0; p < infos[i]->height; p++){
-            pArr[p] = (struct Pixel*)malloc(sizeof(struct Pixel) * infos[i]->width);
+
+        //Joining threads
+        for(int i = 0; i < THREAD_COUNT; i++){
+            pthread_join(tids[i],NULL);
+            printf("thread %d joined\n", i);
         }
-        infos[i]->pArr = pArr;
-        for(int j = 0; j < infos[i]->height; j++){
-            for(int k = 0; k< infos[i]->width; k++){
-                infos[i]->pArr[j][k].red = pixels[j][k+infos[i]->start].red;
-                infos[i]->pArr[j][k].blue = pixels[j][k+infos[i]->start].blue;
-                infos[i]->pArr[j][k].green = pixels[j][k+infos[i]->start].green;
+
+        //Take threaded pArrs and copy their info back into og array
+        for(int i = 0; i < THREAD_COUNT; i++){
+            printf("Width of threaded array being copied back is %d\n", infos[i]->width);
+            printf("Offset with info start is %d \n", infos[i]->start);
+
+            if(i == 0){
+                for(int j = 0; j < infos[i]->height; j++){
+                    for(int k = 0; k< infos[i]->width - 1; k++){
+
+                        pixels[j][k].red = infos[i]->pArr[j][k].red;
+                        pixels[j][k].blue =  infos[i]->pArr[j][k].blue;
+                        pixels[j][k].green = infos[i]->pArr[j][k].green;
+                    }
+                }
+            }
+
+            if(i > 0 && i < THREAD_COUNT - 1){
+                for(int j = 0; j < infos[i]->height; j++){
+                    for(int k = 1; k < infos[i]->width - 1 ; k++){
+
+                        pixels[j][k + infos[i]->start].red = infos[i]->pArr[j][k].red;
+                        pixels[j][k + infos[i]->start].blue =  infos[i]->pArr[j][k].blue;
+                        pixels[j][k + infos[i]->start].green = infos[i]->pArr[j][k].green;
+                    }
+                }
+            }else{
+                for(int j = 0; j < infos[i]->height; j++){
+                    for(int k = 1; k< infos[i]->width; k++){
+
+                        pixels[j][k + infos[i]->start].red = infos[i]->pArr[j][k].red;
+                        pixels[j][k + infos[i]->start].blue =  infos[i]->pArr[j][k].blue;
+                        pixels[j][k + infos[i]->start].green = infos[i]->pArr[j][k].green;
+                    }
+                }
             }
         }
-        pthread_create(&tids[i],NULL,threaded_blur,infos[i]);
-        printf("thread %d created\n", i);
-    }
 
-    //Joining threads
-    for(int i = 0; i < THREAD_COUNT; i++){
-        pthread_join(tids[i],NULL);
-        printf("thread %d joined\n", i);
+        //Free all memory that was allocated
+        for(int i = 0; i < THREAD_COUNT; i++){
+            for(int j = 0; j < infos[i]->height; j++){
+                free(infos[i]->pArr[j]);
+                infos[i]->pArr[j] = NULL;
+            }
+            free(infos[i]->pArr);
+            infos[i]->pArr = NULL;
+            free(infos[i]);
+            infos[i]=NULL;
+        }
+        free(infos);
+        infos = NULL;
     }
+    else if(choice == 1){
+        //Stuff for threaded cheese filter
 
-    //Take threaded pArrs and copy their info back into og array
-    for(int i = 0; i < THREAD_COUNT; i++){
-        for(int j = 0; j < infos[i]->height; j++){
-            for(int k = 0; k< infos[i]->width - padding; k++){
-                pixels[j][k + infos[i]->start].red = infos[i]->pArr[j][k].red;
-                pixels[j][k + infos[i]->start].blue =  infos[i]->pArr[j][k].blue;
-                pixels[j][k + infos[i]->start].green = infos[i]->pArr[j][k].green;
+        //First we need to generate circle data
+        int totalN = floor(DIB.width * 0.08);
+
+        struct Circle* circles = (struct Circle*) malloc(sizeof(struct Circle) * totalN);
+
+        makeCircles(circles, &DIB);
+
+        int segSize = DIB.width/THREAD_COUNT;
+
+        int remPixels = width - (segSize*THREAD_COUNT);
+
+        int currentPixel = 0;
+
+        for(int i = 0; i < THREAD_COUNT; i++){
+
+            infos[i] = (struct info*)malloc(sizeof(struct info));
+            infos[i]->start = currentPixel;
+            infos[i]->height = height;
+            if(i == THREAD_COUNT - 1){
+                infos[i]-> end = (width - 1);
+                infos[i]->width = infos[i]->end - infos[i]->start + 1;
+            }else{
+                //If there are remaining pixels add to the column size, saving last one for end thread to balance
+                if(remPixels > 1){
+                    infos[i]-> end = (infos[i]->start + segSize + 1);
+                    remPixels--;
+                }else{
+                    infos[i]-> end = (infos[i]->start + segSize) ;
+                }
+                currentPixel = infos[i]->end;
+                infos[i]->width = infos[i]->end - infos[i]->start;
+            }
+            struct Pixel** pArr = (struct Pixel**)malloc(sizeof(struct Pixel*)*infos[i]->height);
+            for(int p = 0; p < infos[i]->height; p++){
+                pArr[p] = (struct Pixel*)malloc(sizeof(struct Pixel) * infos[i]->width);
+            }
+
+            infos[i]->pArr = pArr;
+
+            infos[i]->totalCircles = 0;
+
+            for(int j = 0; j < infos[i]->height; j++){
+                for(int k = 0; k< infos[i]->width; k++){
+                    infos[i]->pArr[j][k].red = pixels[j][k+infos[i]->start].red;
+                    infos[i]->pArr[j][k].blue = pixels[j][k+infos[i]->start].blue;
+                    infos[i]->pArr[j][k].green = pixels[j][k+infos[i]->start].green;
+
+                    //Populate each thread's circle data
+                    for(int l = 0; l < totalN; l++){
+                        double circleValue = pow(((k+infos[i]->start) - circles[l].x), 2) + pow(j - circles[l].y, 2);
+                        double radSq = pow(circles[l].r,2);
+                        int included = isIncluded(infos[i]->circles, circles[l].x, circles[l].y, infos[i]->totalCircles);
+                        if(circleValue <= radSq && included == 0){
+                            if(infos[i]->totalCircles == 0){
+                                struct Circle* threadCircles = (struct Circle*) malloc(sizeof(struct Circle));
+                                infos[i]->circles = threadCircles;
+                                infos[i]->circles[infos[i]->totalCircles] = circles[l];
+                                infos[i]->totalCircles++;
+                            }else if(infos[i]->totalCircles > 0){
+                                struct Circle* newCircles;
+                                infos[i]->totalCircles++;
+                                newCircles = (struct Circle*)realloc(infos[i]->circles, sizeof(struct Circle)*infos[i]->totalCircles);
+                                infos[i]->circles = newCircles;
+                                infos[i]->circles[infos[i]->totalCircles - 1] = circles[l];
+                            }
+                        }
+                    }
+                }
+            }
+
+            pthread_attr_init(&attr);
+            pthread_create(&tids[i],&attr,drawThreadedCircles,infos[i]);
+            printf("thread %d created\n", i);
+        }
+
+        //Joining threads
+        for(int i = 0; i < THREAD_COUNT; i++){
+            pthread_join(tids[i],NULL);
+            printf("thread %d joined\n", i);
+        }
+
+        //Take threaded pArrs and copy their info back into og array
+        for(int i = 0; i < THREAD_COUNT; i++){
+            printf("Width of threaded array being copied back is %d\n", infos[i]->width);
+            printf("Offset with info start is %d \n", infos[i]->start);
+            printf("Number of circles in thread %d \n", infos[i]->totalCircles);
+            for(int j = 0; j < infos[i]->height; j++){
+                for(int k = 0; k< infos[i]->width; k++){
+                    pixels[j][k + infos[i]->start].red = infos[i]->pArr[j][k].red;
+                    pixels[j][k + infos[i]->start].blue =  infos[i]->pArr[j][k].blue;
+                    pixels[j][k + infos[i]->start].green = infos[i]->pArr[j][k].green;
+                }
             }
         }
+
+
+        //Free all memory that was allocated
+        for(int i = 0; i < THREAD_COUNT; i++){
+            for(int j = 0; j < infos[i]->height; j++){
+                free(infos[i]->pArr[j]);
+                infos[i]->pArr[j] = NULL;
+            }
+            free(infos[i]->pArr);
+            infos[i]->pArr = NULL;
+            free(infos[i]->circles);
+            infos[i]->circles = NULL;
+            free(infos[i]);
+            infos[i]=NULL;
+        }
+
+        free(circles);
+        circles = NULL;
+
+        free(infos);
+        infos = NULL;
     }
 
-    //Free all memory that was allocated
-    for(int i = 0; i < THREAD_COUNT; i++){
-        for(int j = 0; j < infos[i]->height; j++){
-            free(infos[i]->pArr[j]);
-            infos[i]->pArr[j] = NULL;
-        }
-        free(infos[i]->pArr);
-        infos[i]->pArr = NULL;
-        free(infos[i]);
-        infos[i]=NULL;
-    }
-    free(infos);
-    infos = NULL;
 
     //blur(pixels, &DIB);
 
@@ -192,22 +385,30 @@ void main(int argc, char* argv[]) {
     fclose(file_output);
 }
 
+//Check if a circle is already included in the array provided
+int isIncluded(struct Circle* circles, int x, int y, int size){
+    if(size == 0){
+        return 0;
+    }
+    for(int i = 0; i < size; i++){
+        if(circles[i].x == x && circles[i].y == y){
+            return 1;
+        }
+    }
+    return 0;
+}
 
-void drawCircles(struct Pixel** pArr, struct DIB_Header* header) {
 
-    //First we need to generate circle data
-    int totalN = floor(header->width * 0.08);
+void makeCircles(struct Circle* circles, struct DIB_Header* DIB){
+    int totalN = floor(DIB->width * 0.08);
     int avgR = totalN;
     srand(time(NULL));
     rand();
 
-
-   struct Circle* circles = (struct Circle*) malloc(sizeof(struct Circle) * totalN);
-
     //Make first quarter of circles larger
     for(int i = 0; i < totalN / 4; i++){
-        int y = rand() % header->height;;
-        int x = rand() % header->width;
+        int y = rand() % DIB->height;
+        int x = rand() % DIB->width;
         circles[i].r = avgR * 1.5;
 
         //No overlapping, help evenly distribute
@@ -216,8 +417,8 @@ void drawCircles(struct Pixel** pArr, struct DIB_Header* header) {
             while(j < i){
                 //Use distance formula to see if distance betwen points is less then sum of each circles radius
                 if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
-                    y = rand() % header->height;;
-                    x = rand() % header->width;
+                    y = rand() % DIB->height;
+                    x = rand() % DIB->width;
                     j = 0; //If there is overlap you have to reset loop so each new center point is compared to every existing circle each time
                 } else{
                     j++;
@@ -230,153 +431,67 @@ void drawCircles(struct Pixel** pArr, struct DIB_Header* header) {
     }
     //Make second quarter of circles smaller
     for(int i = totalN/4; i < totalN / 2; i++){
-        int y = rand() % header->height;
-        int x = rand() % header->width;
+        int y = rand() % DIB->height;
+        int x = rand() % DIB->width;
         circles[i].r = avgR / 1.5;
 
         //No overlapping, help evenly distribute
         int j = 0;
         while(j < i){
             if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
-                y = rand() % header->height;;
-                x = rand() % header->width;
+                y = rand() % DIB->height;
+                x = rand() % DIB->width;
                 j = 0;
             } else{
                 j++;
             }
         }
 
-    circles[i].y = y;
-    circles[i].x = x;
+        circles[i].y = y;
+        circles[i].x = x;
     }
     //Make last half of quarter avg sized
     for(int i = totalN/2; i < totalN; i++){
-        int y = rand() % header->height;
-        int x = rand() % header->width;
+        int y = rand() % DIB->height;
+        int x = rand() % DIB->width;
         circles[i].r = avgR;
 
         //No overlapping, help evenly distribute
         int j = 0;
         while(j < i){
             if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
-                y = rand() % header->height;;
-                x = rand() % header->width;
+                y = rand() % DIB->height;
+                x = rand() % DIB->width;
                 j = 0;
             } else{
                 j++;
             }
         }
-    circles[i].y = y;
-    circles[i].x = x;
+        circles[i].y = y;
+        circles[i].x = x;
     }
+}
 
-    for (int i = 0; i < header->height; i++) {
-        for (int j = 0; j < header->width; j++) {
-            for(int k = 0; k < totalN; k++){
-                double circleValue = pow((j - circles[k].x), 2) + pow(i - circles[k].y, 2);
-                double radSq = pow(circles[k].r,2);
+void* drawThreadedCircles(void* data) {
+    struct info* info = (struct info*)data;
+
+    for (int i = 0; i < info->height; i++) {
+        for (int j = 0; j < info->width; j++) {
+            for(int k = 0; k < info->totalCircles; k++){
+                double circleValue = pow(((j+info->start) - info->circles[k].x), 2) + pow(i - info->circles[k].y, 2);
+                double radSq = pow(info->circles[k].r,2);
                 if(circleValue <= radSq){
-                    pArr[i][j].red = 0;
-                    pArr[i][j].blue = 0;
-                    pArr[i][j].green = 0;
+                    info->pArr[i][j].red = 0;
+                    info->pArr[i][j].blue = 0;
+                    info->pArr[i][j].green = 0;
                 }
             }
         }
     }
 
+
     //Make it cheesy
-    image_apply_colorshift(pArr, header, 56, 56, 0);
-
-    free(circles);
-    circles = NULL;
-}
-void blur(struct Pixel** pArr, struct DIB_Header* header){
-    int sumRed = 0;
-    int sumBlue = 0;
-    int sumGreen = 0;
-    int validN = 1;
-
-    for (int i = 0; i < header->height; i++) {
-        for (int j = 0; j < header->width; j++) {
-
-            validN = 1;
-            sumBlue = 0;
-            sumGreen = 0;
-            sumRed = 0;
-
-            sumBlue += (int)pArr[i][j].blue;
-            sumGreen += (int)pArr[i][j].green;
-            sumRed += (int)pArr[i][j].red;
-
-            //Bottom Neighbor
-            if(i+1 < header->height ){
-                sumBlue += (int)pArr[i+1][j].blue;
-                sumGreen += (int)pArr[i+1][j].green;
-                sumRed += (int)pArr[i+1][j].red;
-                validN++;
-            }
-
-            //Top Neighbor
-            if(i-1 >= 0){
-                sumBlue += (int)pArr[i-1][j].blue;
-                sumGreen += (int)pArr[i-1][j].green;
-                sumRed += (int)pArr[i-1][j].red;
-                validN++;
-            }
-
-            //Right Neighbor
-            if(j+1 < header->width ){
-                sumBlue += (int)pArr[i][j+1].blue;
-                sumGreen += (int)pArr[i][j+1].green;
-                sumRed += (int)pArr[i][j+1].red;
-                validN++;
-            }
-            //Left Neighbor
-            if(j-1 >= 0){
-                sumBlue += (int)pArr[i][j-1].blue;
-                sumGreen += (int)pArr[i][j-1].green;
-                sumRed += (int)pArr[i][j-1].red;
-                validN++;
-            }
-            //Bottom Right Neighbor
-
-            if(i + 1 < header->height  && j + 1 < header->width ){
-                sumBlue += (int)pArr[i+1][j+1].blue;
-                sumGreen += (int)pArr[i+1][j+1].green;
-                sumRed += (int)pArr[i+1][j+1].red;
-                validN++;
-            }
-
-            //Top Right Neighbor
-            if(i - 1 >= 0 && j + 1 < header->width ){
-                sumBlue += (int)pArr[i-1][j+1].blue;
-                sumGreen += (int)pArr[i-1][j+1].green;
-                sumRed += (int)pArr[i-1][j+1].red;
-                validN++;
-            }
-
-            //Bottom Left Neighbor
-            if(i + 1 < header->height  && j - 1 >= 0){
-                sumBlue += (int)pArr[i+1][j-1].blue;
-                sumGreen += (int)pArr[i+1][j-1].green;
-                sumRed += (int)pArr[i+1][j-1].red;
-                validN++;
-            }
-
-            //Top Left Neighbor
-            if(i - 1 >= 0 && j - 1 >= 0){
-                sumBlue += (int)pArr[i-1][j-1].blue;
-                sumGreen += (int)pArr[i-1][j-1].green;
-                sumRed += (int)pArr[i-1][j-1].red;
-                validN++;
-            }
-
-            pArr[i][j].blue = (unsigned char)(sumBlue/validN);
-            pArr[i][j].green = (unsigned char)(sumGreen/validN);
-            pArr[i][j].red = (unsigned char)(sumRed/validN);
-        }
-    }
-
+    image_apply_colorshift(info->pArr, info->height, info->width, 56, 56, 0);
 }
 
 void* threaded_blur(void* data){
@@ -472,13 +587,13 @@ void* threaded_blur(void* data){
 }
 
 //Image color shift from previous Image Processor program
-void image_apply_colorshift(struct Pixel** pArr, struct DIB_Header* header, int rShift, int gShift, int bShift) {
+void image_apply_colorshift(struct Pixel** pArr, int height, int width, int rShift, int gShift, int bShift) {
     //Highest value a rgb value can be is 255
     unsigned char highestValue = 255;
     unsigned char lowestValue = 0;
     //Traverse through the pixel array shifting based on given values
-    for (int i = 0; i < header->height; i++) {
-        for (int j = 0; j < header->width; j++) {
+    for (int i = 0; i < height; i++) {
+        for (int j = 0; j < width; j++) {
             //If value given is higher or lower than the highest/lowest value clap to the highest/lowest value
             if(pArr[i][j].blue  + bShift > highestValue){
                 pArr[i][j].blue = highestValue;
