@@ -1,7 +1,7 @@
 /**
 * Threaded bmp image process, apply blur and cheese filter
 *
-* Completion time: (estimation of hours spent on this program)
+* Completion time: 14hrs
 *
 * @author Connor McCoy
 * @version 11/4/23
@@ -22,7 +22,7 @@
 #define BMP_HEADER_SIZE 14
 #define BMP_DIB_HEADER_SIZE 40
 #define MAXIMUM_IMAGE_SIZE 4096
-#define THREAD_COUNT 57
+#define THREAD_COUNT 7
 ////////////////////////////////////////////////////////////////////////////////
 //DATA STRUCTURES
 //
@@ -43,8 +43,6 @@ struct info{
 };
 
 void image_apply_colorshift(struct Pixel** pArr, int height, int width, int rShift, int gShift, int bShift);
-void blur(struct Pixel** pArr, struct DIB_Header* header);
-void drawCircles(struct Pixel** pArr, struct DIB_Header* header);
 void* threaded_blur(void* data);
 void* drawThreadedCircles(void* data);
 void makeCircles(struct Circle* circles, struct DIB_Header* DIB);
@@ -58,9 +56,68 @@ void main(int argc, char* argv[]) {
 
     //Default file name so program compiles from IDE
     char* file_input_name = "ttt.bmp";
-    //Parse file name given through command line
+    //Variable to check if name is changed in command line or not
+    int changedName = 0;
 
-    file_input_name = argv[1];
+    char* file_output_name;
+    //Allocate space for the info structs that will be sent to the threads
+    struct info** infos = (struct info**)malloc(sizeof(struct info*) * THREAD_COUNT);
+
+    //Variable to store choice between blur or cheese, default is cheese
+    int choice = 1;
+    //Starting the arg parser, set to 1 to ignore the ./ProgamName
+    int a = 1;
+    //Parse through command line arguments//////////////////////////////////////////////////////////////////////////////
+    while (argv[a] != NULL){
+
+        //If a valid command is entered valid will be set to 1.
+        int valid = 0;
+
+        //Set input file/////////////////////////////////////////////////////////////////////////////////////////////
+        if (strcmp(argv[a], "-i") == 0){
+            valid = 1;
+            a++;
+            //Parse file name given through command line
+
+            file_input_name = argv[a];
+        }
+
+        //Set filter choice//////////////////////////////////////////////////////////////////////////////////////////////
+        if (strcmp(argv[a], "-f") == 0){
+            valid = 1;
+            a++;
+            if (strcmp(argv[a], "b") == 0){
+                choice = 0;
+            }
+            else if (strcmp(argv[a], "c") == 0){
+                choice = 1;
+            }
+        }
+
+        //Update file output name///////////////////////////////////////////////////////////////////////////////////////
+        if (strcmp(argv[a], "-o") == 0){
+            valid = 1;
+            a++;
+            file_output_name = argv[a];
+            //Making sure output file type is labeled correctly
+            if(strcmp(&(file_output_name[strlen(file_output_name)-4]), ".bmp") != 0){
+                printf("Output file must be of type .bmp\n");
+                exit(1);
+            }
+            changedName = 1;
+        }
+
+        //If an invalid command in entered send message listing off correct commands to user
+        if(valid == 0){
+            printf("'%s' Is not a valid command!\nEnter:\n-i, follow by valid file input name.\n"
+                   "-f followed by b to apply blur filter\n"
+                   "-f followed by c to apply cheese filter\n"
+                   "-o followed by desired file name to set output file name\n", argv[a]);
+            break;
+        }
+        a++;
+    }
+
     //Checking if file entered exists
     if (access(file_input_name, F_OK) != 0) {
         printf("That file doesn't exist, please enter correct file name as first argument\n");
@@ -91,73 +148,66 @@ void main(int argc, char* argv[]) {
     //Close file, done reading
     fclose(file_input);
 
-    int changedName = 0;
-
-    char* file_output_name;
-
+    //Initialize height and width variables along with tids
     int height = DIB.height;
     int width = DIB.width;
     pthread_t tids[THREAD_COUNT];
     pthread_attr_t attr;
 
-    struct info** infos = (struct info**)malloc(sizeof(struct info*) * THREAD_COUNT);
-
-    int choice = 0;
-
     if(choice == 0){
-
+        //Calculate min segment size based on thread count and width of image
         int segSize = DIB.width/THREAD_COUNT;
-
+        //Find out how many remaining pixels are unaccounted for with just segSize
         int remPixels = width - (segSize*THREAD_COUNT);
-
+        //Set starting pixel variable to 0
         int currentPixel = 0;
 
         //Creating info structs and data splitting for blur threads
         for(int i = 0; i < THREAD_COUNT; i++){
-
+            //Padding to add to left and or right of each column
             int padding = 1;
-
+            //Allocate the memory for the thread specific info struct
             infos[i] = (struct info*)malloc(sizeof(struct info));
-
+            //Set start equal to current pixel
             infos[i]->start = currentPixel;
 
             infos[i]->height = height;
 
 
-            if(i == THREAD_COUNT - 1){
-                infos[i]-> end = (width - 1);
-                infos[i]->width = infos[i]->end - infos[i]->start + 1;
-            }else{
-                //If there are remaining pixels add to the column size, saving last one for end thread to balance
-                if(remPixels > 1){
-                    infos[i]-> end = (infos[i]->start + segSize + 1);
-                    remPixels--;
-                }else{
-                    infos[i]-> end = (infos[i]->start + segSize);
-                }
-                currentPixel = infos[i]->end;
-
-                //Pad the arrays for blur to be accurate
-                if(i == 0){
-                    infos[i]->end += padding;
-                }
-                if(i > 0 && i < THREAD_COUNT -1){
-                    infos[i]->end += padding;
-                    infos[i]->start -= padding;
-                }
-                if(i == THREAD_COUNT - 1){
-                    infos[i]->start -= padding;
-                }
-                infos[i]->width = infos[i]->end - infos[i]->start;
-
+            //If there are remaining pixels add to the column size
+            if(remPixels > 0){
+                infos[i]-> end = (infos[i]->start + segSize + 1);
+                remPixels--;
+            }else{ //If not just add the seg size to the start inorder to get end position
+                infos[i]-> end = (infos[i]->start + segSize);
             }
+            //Update the current pixel
+            currentPixel = infos[i]->end;
+            //Pad the arrays for blur to be accurate
+            //Padd only the end if first thread segment
+            if(i == 0){
+                infos[i]->end += padding;
+            }
+            //Pad both sides if in the middle
+            if(i > 0 && i < THREAD_COUNT -1){
+                infos[i]->end += padding;
+                infos[i]->start -= padding;
+            }
+            //Only pad the left side if end segment
+            if(i == THREAD_COUNT - 1){
+                infos[i]->start -= padding;
+            }
+            //Set width of each segment for easy traversal
+            infos[i]->width = infos[i]->end - infos[i]->start;
 
+            //Allocate the memory for the specific thread based on the width
             struct Pixel** pArr = (struct Pixel**)malloc(sizeof(struct Pixel*)*infos[i]->height);
             for(int p = 0; p < infos[i]->height; p++){
                 pArr[p] = (struct Pixel*)malloc(sizeof(struct Pixel) * infos[i]->width);
             }
 
             infos[i]->pArr = pArr;
+            //Populate the threads pixel array based off the global pixel array
             for(int j = 0; j < infos[i]->height; j++){
                 for(int k = 0; k< infos[i]->width; k++){
                     infos[i]->pArr[j][k].red = pixels[j][k + infos[i]->start].red;
@@ -165,6 +215,7 @@ void main(int argc, char* argv[]) {
                     infos[i]->pArr[j][k].green = pixels[j][k + infos[i]->start].green;
                 }
             }
+            //Create thread and give thread operation the threads data via infos[i]
             pthread_attr_init(&attr);
             pthread_create(&tids[i],&attr,threaded_blur,infos[i]);
             printf("thread %d created\n", i);
@@ -180,7 +231,8 @@ void main(int argc, char* argv[]) {
         for(int i = 0; i < THREAD_COUNT; i++){
             printf("Width of threaded array being copied back is %d\n", infos[i]->width);
             printf("Offset with info start is %d \n", infos[i]->start);
-
+            //Account for padding
+            //If its the first segment ignore the last column, its just padding
             if(i == 0){
                 for(int j = 0; j < infos[i]->height; j++){
                     for(int k = 0; k< infos[i]->width - 1; k++){
@@ -191,7 +243,7 @@ void main(int argc, char* argv[]) {
                     }
                 }
             }
-
+            //If its a middle segment ignore the beginning and end columns, theyre just padding
             if(i > 0 && i < THREAD_COUNT - 1){
                 for(int j = 0; j < infos[i]->height; j++){
                     for(int k = 1; k < infos[i]->width - 1 ; k++){
@@ -202,6 +254,7 @@ void main(int argc, char* argv[]) {
                     }
                 }
             }else{
+                //add ignore the padding for the last segment
                 for(int j = 0; j < infos[i]->height; j++){
                     for(int k = 1; k< infos[i]->width; k++){
 
@@ -227,6 +280,7 @@ void main(int argc, char* argv[]) {
         free(infos);
         infos = NULL;
     }
+
     else if(choice == 1){
         //Stuff for threaded cheese filter
 
@@ -236,7 +290,7 @@ void main(int argc, char* argv[]) {
         struct Circle* circles = (struct Circle*) malloc(sizeof(struct Circle) * totalN);
 
         makeCircles(circles, &DIB);
-
+        //Creating segments in the same was as was done in blur
         int segSize = DIB.width/THREAD_COUNT;
 
         int remPixels = width - (segSize*THREAD_COUNT);
@@ -244,33 +298,30 @@ void main(int argc, char* argv[]) {
         int currentPixel = 0;
 
         for(int i = 0; i < THREAD_COUNT; i++){
-
+            //Allocate memory for the info threads struct
             infos[i] = (struct info*)malloc(sizeof(struct info));
             infos[i]->start = currentPixel;
             infos[i]->height = height;
-            if(i == THREAD_COUNT - 1){
-                infos[i]-> end = (width - 1);
-                infos[i]->width = infos[i]->end - infos[i]->start + 1;
+
+            //If there are remaining pixels add to the column size
+            if(remPixels > 0){
+                infos[i]-> end = (infos[i]->start + segSize + 1);
+                remPixels--;
             }else{
-                //If there are remaining pixels add to the column size, saving last one for end thread to balance
-                if(remPixels > 1){
-                    infos[i]-> end = (infos[i]->start + segSize + 1);
-                    remPixels--;
-                }else{
-                    infos[i]-> end = (infos[i]->start + segSize) ;
-                }
-                currentPixel = infos[i]->end;
-                infos[i]->width = infos[i]->end - infos[i]->start;
+                infos[i]-> end = (infos[i]->start + segSize) ;
             }
+            currentPixel = infos[i]->end;
+            infos[i]->width = infos[i]->end - infos[i]->start;
+            //Allocating the array memory for the threads
             struct Pixel** pArr = (struct Pixel**)malloc(sizeof(struct Pixel*)*infos[i]->height);
             for(int p = 0; p < infos[i]->height; p++){
                 pArr[p] = (struct Pixel*)malloc(sizeof(struct Pixel) * infos[i]->width);
             }
 
             infos[i]->pArr = pArr;
-
+            //Set the initial value of the threads total number of circles it needs to draw to 0
             infos[i]->totalCircles = 0;
-
+            //Populate the threads pixel array based of corresponding pixels in global array as before
             for(int j = 0; j < infos[i]->height; j++){
                 for(int k = 0; k< infos[i]->width; k++){
                     infos[i]->pArr[j][k].red = pixels[j][k+infos[i]->start].red;
@@ -279,11 +330,14 @@ void main(int argc, char* argv[]) {
 
                     //Populate each thread's circle data
                     for(int l = 0; l < totalN; l++){
+                        //Calculate if the pixel is one that will need to be drawn into the circle
                         double circleValue = pow(((k+infos[i]->start) - circles[l].x), 2) + pow(j - circles[l].y, 2);
                         double radSq = pow(circles[l].r,2);
+                        //Run isIncluded helper function so that we don't add circles that are already added
                         int included = isIncluded(infos[i]->circles, circles[l].x, circles[l].y, infos[i]->totalCircles);
                         if(circleValue <= radSq && included == 0){
                             if(infos[i]->totalCircles == 0){
+                                //If there is no circles added yet we allocate memory and add the circle
                                 struct Circle* threadCircles = (struct Circle*) malloc(sizeof(struct Circle));
                                 infos[i]->circles = threadCircles;
                                 infos[i]->circles[infos[i]->totalCircles] = circles[l];
@@ -291,6 +345,7 @@ void main(int argc, char* argv[]) {
                             }else if(infos[i]->totalCircles > 0){
                                 struct Circle* newCircles;
                                 infos[i]->totalCircles++;
+                                //Use realloc to resize the array to fit a new circle struct
                                 newCircles = (struct Circle*)realloc(infos[i]->circles, sizeof(struct Circle)*infos[i]->totalCircles);
                                 infos[i]->circles = newCircles;
                                 infos[i]->circles[infos[i]->totalCircles - 1] = circles[l];
@@ -299,7 +354,7 @@ void main(int argc, char* argv[]) {
                     }
                 }
             }
-
+            //Create the threads and send the info to the runner function
             pthread_attr_init(&attr);
             pthread_create(&tids[i],&attr,drawThreadedCircles,infos[i]);
             printf("thread %d created\n", i);
@@ -348,14 +403,12 @@ void main(int argc, char* argv[]) {
     }
 
 
-    //blur(pixels, &DIB);
-
-    //drawCircles(pixels, &DIB);
-
     //If output name wasn't given through command line make it default to original name + _copy.bmp
+
     if(changedName ==0){
         file_input_name[strlen(file_input_name)-4] = '\0';
         file_output_name = strcat(file_input_name, "_copy.bmp");
+
     }
 
     //Update the headers
@@ -378,7 +431,6 @@ void main(int argc, char* argv[]) {
         free(pixels[p]);
         pixels[p] = NULL;
     }
-
     free(pixels);
     pixels = NULL;
 
@@ -415,7 +467,7 @@ void makeCircles(struct Circle* circles, struct DIB_Header* DIB){
         if(i > 0){
             int j = 0;
             while(j < i){
-                //Use distance formula to see if distance betwen points is less then sum of each circles radius
+                //Use distance formula to see if distance between points is less then sum of each circles radius
                 if((sqrt(pow(x - circles[j].x, 2) + pow(y - circles[j].y, 2))) <= (circles[i].r + circles[j].r)){
                     y = rand() % DIB->height;
                     x = rand() % DIB->width;
@@ -478,6 +530,7 @@ void* drawThreadedCircles(void* data) {
     for (int i = 0; i < info->height; i++) {
         for (int j = 0; j < info->width; j++) {
             for(int k = 0; k < info->totalCircles; k++){
+                //Using the formula for a circle to determine if the pixel falls inside the circle then turn that pixel black
                 double circleValue = pow(((j+info->start) - info->circles[k].x), 2) + pow(i - info->circles[k].y, 2);
                 double radSq = pow(info->circles[k].r,2);
                 if(circleValue <= radSq){
@@ -497,9 +550,11 @@ void* drawThreadedCircles(void* data) {
 void* threaded_blur(void* data){
 
     struct info* info = (struct info*)data;
+    //Sum totals of each neighboring r/b/g value
     int sumRed = 0;
     int sumBlue = 0;
     int sumGreen = 0;
+    //Sum of valid neighbors to sum and properly average, always will start with 1
     int validN = 1;
 
     for (int i = 0; i < info->height; i++) {
@@ -509,7 +564,7 @@ void* threaded_blur(void* data){
             sumBlue = 0;
             sumGreen = 0;
             sumRed = 0;
-
+            //Update sums with the currently selected pixels values, will always be valid
             sumBlue += (int)info->pArr[i][j].blue;
             sumGreen += (int)info->pArr[i][j].green;
             sumRed += (int)info->pArr[i][j].red;
@@ -576,7 +631,7 @@ void* threaded_blur(void* data){
                 sumRed += (int)info->pArr[i-1][j-1].red;
                 validN++;
             }
-
+            //Calculate the average value of each r/b/g pixel and assign it to current pixel's rbg values
             info->pArr[i][j].blue = (unsigned char)(sumBlue/validN);
             info->pArr[i][j].green = (unsigned char)(sumGreen/validN);
             info->pArr[i][j].red = (unsigned char)(sumRed/validN);
