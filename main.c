@@ -17,11 +17,7 @@
 #include <pthread.h>
 #include "BmpProcessor.h"
 ////////////////////////////////////////////////////////////////////////////////
-//MACRO DEFINITIONS
-//problem assumptions
-#define BMP_HEADER_SIZE 14
-#define BMP_DIB_HEADER_SIZE 40
-#define MAXIMUM_IMAGE_SIZE 4096
+
 #define THREAD_COUNT 7
 ////////////////////////////////////////////////////////////////////////////////
 //DATA STRUCTURES
@@ -218,19 +214,15 @@ void main(int argc, char* argv[]) {
             //Create thread and give thread operation the threads data via infos[i]
             pthread_attr_init(&attr);
             pthread_create(&tids[i],&attr,threaded_blur,infos[i]);
-            printf("thread %d created\n", i);
         }
 
         //Joining threads
         for(int i = 0; i < THREAD_COUNT; i++){
             pthread_join(tids[i],NULL);
-            printf("thread %d joined\n", i);
         }
 
         //Take threaded pArrs and copy their info back into og array
         for(int i = 0; i < THREAD_COUNT; i++){
-            printf("Width of threaded array being copied back is %d\n", infos[i]->width);
-            printf("Offset with info start is %d \n", infos[i]->start);
             //Account for padding
             //If its the first segment ignore the last column, its just padding
             if(i == 0){
@@ -357,20 +349,15 @@ void main(int argc, char* argv[]) {
             //Create the threads and send the info to the runner function
             pthread_attr_init(&attr);
             pthread_create(&tids[i],&attr,drawThreadedCircles,infos[i]);
-            printf("thread %d created\n", i);
         }
 
         //Joining threads
         for(int i = 0; i < THREAD_COUNT; i++){
             pthread_join(tids[i],NULL);
-            printf("thread %d joined\n", i);
         }
 
         //Take threaded pArrs and copy their info back into og array
         for(int i = 0; i < THREAD_COUNT; i++){
-            printf("Width of threaded array being copied back is %d\n", infos[i]->width);
-            printf("Offset with info start is %d \n", infos[i]->start);
-            printf("Number of circles in thread %d \n", infos[i]->totalCircles);
             for(int j = 0; j < infos[i]->height; j++){
                 for(int k = 0; k< infos[i]->width; k++){
                     pixels[j][k + infos[i]->start].red = infos[i]->pArr[j][k].red;
